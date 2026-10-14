@@ -1249,15 +1249,29 @@ bool Encoder::init(Device *device, int width_, int height_, ChromaSubsampling ch
 	}
 
 	if (!device->get_device_features().vk12_features.storageBuffer8BitAccess)
+	{
+		LOGE("PyroWave encoder requires storageBuffer8BitAccess.\n");
 		return false;
+	}
 	if (!device->get_device_features().enabled_features.shaderInt16)
+	{
+		LOGE("PyroWave encoder requires shaderInt16.\n");
 		return false;
+	}
 
 	// This should cover any HW I care about.
 	if (!device->supports_subgroup_size_log2(true, 4, 4) &&
 	    !device->supports_subgroup_size_log2(true, 5, 5) &&
 	    !device->supports_subgroup_size_log2(true, 6, 6))
+	{
+		const auto &features = device->get_device_features();
+		LOGE("PyroWave encoder requires full subgroups of 16, 32 or 64 lanes. "
+		     "Enabled sizeControl=%u fullSubgroups=%u range=%u-%u requiredSizeStages=0x%x.\n",
+		     features.vk13_features.subgroupSizeControl, features.vk13_features.computeFullSubgroups,
+		     features.vk13_props.minSubgroupSize, features.vk13_props.maxSubgroupSize,
+		     features.vk13_props.requiredSubgroupSizeStages);
 		return false;
+	}
 
 	return impl->init(device, width_, height_, chroma_, false);
 }

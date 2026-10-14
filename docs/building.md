@@ -114,36 +114,91 @@ does not require users to install the CUDA toolkit to run Vibepollo.
 > according to [CUDA Toolkit Archive](https://developer.nvidia.com/cuda-toolkit-archive)
 
 #### macOS
-You can either use [Homebrew](https://brew.sh) or [MacPorts](https://www.macports.org) to install dependencies.
+The native host requires macOS 14.2 or newer for Core Audio process taps.
+Build on the target architecture using the Xcode Command Line Tools, Homebrew,
+and Node.js/npm for the web UI. Apple Silicon is the locally validated path;
+the macOS workflow also builds a separate Intel artifact.
 
 ##### Homebrew
+From the repository root:
+
 ```bash
-dependencies=(
-  "boost"  # Optional
-  "cmake"
-  "doxygen"  # Optional, for docs
-  "graphviz"  # Optional, for docs
-  "icu4c"  # Optional, if boost is not installed
-  "miniupnpc"
-  "ninja"
-  "openssl@3"
-  "opus"
-  "pkg-config"
-)
-brew install "${dependencies[@]}"
+bash scripts/macos_build.sh --step=deps
+bash scripts/macos_build.sh --step=cmake
+bash scripts/macos_build.sh --step=build
+bash scripts/macos_build.sh --step=test
+build/macos/Vibepollo.app/Contents/MacOS/Vibepollo
 ```
 
-If there are issues with an SSL header that is not found:
+The script uses AppleClang, Ninja, pinned Boost sources, and the prepared
+FFmpeg archive. It initializes only the submodules needed by the host; the
+nested FFmpeg source checkouts inside `build-deps` are unnecessary. WebRTC and
+the PyroWave host backend remain disabled on macOS.
 
-@tabs{
-  @tab{ Intel | ```bash
-    ln -s /usr/local/opt/openssl/include/openssl /usr/local/include/openssl
-    ```}
-  @tab{ Apple Silicon | ```bash
-    ln -s /opt/homebrew/opt/openssl/include/openssl /opt/homebrew/include/openssl
-    ```
-  }
-}
+Local builds default to the current macOS version because Homebrew libraries
+may require that version. `MACOSX_DEPLOYMENT_TARGET=14.2` is appropriate only
+when **all** dependencies were built for 14.2 or earlier; the compiler flag
+alone does not make a newer Homebrew installation compatible with older Macs.
+`VIBEPOLLO_BUILD_DIR` overrides the build directory.
+
+To create a self-contained app with bundled dynamic libraries and an ad-hoc
+signature, without an Apple Developer account:
+
+```bash
+cmake --install build/macos --prefix "$PWD/build/macos/package" --component Runtime
+```
+
+The resulting `build/macos/package/Vibepollo.app` can be opened in Finder.
+Opening the bundle launches the configuration page in the default browser
+after the HTTPS listener is ready. Opening it again while it is running also
+opens that page. The host stays in the menu bar and has no separate main window.
+`bash scripts/macos_build.sh --step=dmg` additionally creates a disk image.
+Distribution with Developer ID signing requires `APPLE_CODESIGN_IDENTITY`;
+notarization is opt-in with `--notarize` and the `notarytool-password` keychain
+profile. Ad-hoc signing is for local use and does not replace notarization.
+
+On first launch, open `https://127.0.0.1:47990` and create the local web login.
+The host uses a self-signed certificate. In System Settings → Privacy & Security,
+enable Vibepollo in Screen & System Audio Recording and Accessibility, then
+relaunch the app. The web UI can run before capture permission is granted;
+that alone does not validate a working video stream. Pair a Moonlight/Artemis
+client and verify video, system audio, mouse and keyboard after granting access.
+Virtual gamepads and virtual displays are not implemented by this macOS backend.
+
+Local validation (2026-10-14, M1 Pro, macOS 26.6.2): the packaged ARM64 app
+starts, discovers the display, serves the web UI, and captures/encodes frames
+with H.264 and HEVC VideoToolbox, including HEVC 10-bit. Its ad-hoc signature
+and bundled library dependencies pass verification. The configured suite has
+89 passing tests and one skipped Playnite/.NET test; two Windows CRT emulation
+fixtures are excluded on Darwin. End-to-end client playback, system audio and
+remote input still require a paired-client test.
+
+##### PyroWave GPU diagnostic
+
+The standalone diagnostic keeps codec compatibility work separate from capture
+and the host's encoder selection. It uses the actual vendored GPU codec through
+MoltenVK, starting with CPU buffers for upload/readback, packetizing the output,
+and comparing a decoded test frame with its input.
+
+```bash
+brew install molten-vk
+cmake -S tools/pyrowave_macos_probe -B build/pyrowave-probe -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/pyrowave-probe -j 4
+GRANITE_VULKAN_LIBRARY="$(brew --prefix molten-vk)/lib/libMoltenVK.dylib" \
+  ctest --test-dir build/pyrowave-probe --output-on-failure
+```
+
+Exit code 77 means no Vulkan device was available; a codec failure returns 1.
+A successful Vulkan device creation is not sufficient to enable the encoder.
+On the tested M1 Pro with MoltenVK 1.4.2, device creation succeeds, but the
+encoder is rejected: the driver reports a subgroup range of 4–32 and
+`requiredSubgroupSizeStages=0`, while the current codec requires explicitly
+selectable full subgroups of 16, 32 or 64 lanes. Do not enable the host or remove
+that check until the shaders and subgroup selection have a verified Apple path.
+The next integration steps are to pass this roundtrip on Apple GPUs, implement
+the macOS `pyrowave::host` adapter, convert captured BGRA/NV12 frames, and verify
+negotiation and streaming with a PyroWave-capable client. Shared IOSurface/Metal
+interop and latency optimization follow a working upload-based path.
 
 ##### MacPorts
 ```bash

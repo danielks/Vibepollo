@@ -47,7 +47,17 @@ endif()
 if (CMAKE_VERSION VERSION_GREATER_EQUAL "3.30")
     cmake_policy(SET CMP0167 NEW)  # Get BoostConfig.cmake from upstream
 endif()
-find_package(Boost CONFIG ${BOOST_VERSION} COMPONENTS ${BOOST_COMPONENTS})
+if(APPLE)
+    # Homebrew omits CMake packages for several header-only Boost components.
+    # A partial find creates imported targets that collide with FetchContent,
+    # and can mix headers/libraries from two different Boost releases.
+    option(SUNSHINE_USE_SYSTEM_BOOST "Use an installed complete Boost CMake package" OFF)
+else()
+    option(SUNSHINE_USE_SYSTEM_BOOST "Use an installed complete Boost CMake package" ON)
+endif()
+if(SUNSHINE_USE_SYSTEM_BOOST)
+    find_package(Boost CONFIG ${BOOST_VERSION} COMPONENTS ${BOOST_COMPONENTS})
+endif()
 set(_boost_targets_missing FALSE)
 foreach(component IN LISTS BOOST_COMPONENTS)
     if(NOT TARGET "Boost::${component}")
@@ -56,7 +66,7 @@ foreach(component IN LISTS BOOST_COMPONENTS)
     endif()
 endforeach()
 
-if(NOT Boost_FOUND OR _boost_targets_missing)
+if(NOT SUNSHINE_USE_SYSTEM_BOOST OR NOT Boost_FOUND OR _boost_targets_missing)
     message(STATUS "Boost v${BOOST_VERSION} package or required targets not found in the system. Falling back to FetchContent.")
     include(FetchContent)
 
@@ -116,6 +126,15 @@ if(NOT Boost_FOUND OR _boost_targets_missing)
     set(Boost_FOUND TRUE)  # cmake-lint: disable=C0103
     set(Boost_INCLUDE_DIRS  # cmake-lint: disable=C0103
             "$<BUILD_INTERFACE:${Boost_SOURCE_DIR}/libs/headers/include>")
+    if(APPLE)
+        # A Homebrew dependency may contribute /opt/homebrew/include, containing
+        # a different Boost release. Keep the fetched modular headers together
+        # with the libraries built here, ahead of that broad include directory.
+        file(GLOB _boost_modular_includes LIST_DIRECTORIES TRUE
+                "${Boost_SOURCE_DIR}/libs/*/include"
+                "${Boost_SOURCE_DIR}/libs/numeric/*/include")
+        list(APPEND Boost_INCLUDE_DIRS ${_boost_modular_includes})
+    endif()
 
     if(WIN32)
         # Windows build is failing to create .h file in this directory

@@ -132,7 +132,11 @@ namespace {
     if (ec) return std::nullopt;
     const auto mtime = fs::last_write_time(canonical, ec).time_since_epoch().count();
     if (ec) return std::nullopt;
-    return platf::steam::artwork::source_fingerprint_t {canonical.generic_string(), size, mtime};
+    // libc++ uses a 128-bit representation for the filesystem clock. Persist
+    // only timestamps representable by the metadata format, without narrowing.
+    if (mtime < std::numeric_limits<std::intmax_t>::min() ||
+        mtime > std::numeric_limits<std::intmax_t>::max()) return std::nullopt;
+    return platf::steam::artwork::source_fingerprint_t {canonical.generic_string(), size, static_cast<std::intmax_t>(mtime)};
   }
 
   bool read_meta(const fs::path &path, platf::steam::artwork::source_fingerprint_t &out) {

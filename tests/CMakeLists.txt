@@ -16,6 +16,13 @@ if(WIN32)
     # tests that link the static FFmpeg archives must provide the system import
     # library because they do not inherit the application's platform libraries.
     list(APPEND SUNSHINE_TEST_FFMPEG_PLATFORM_LIBRARIES bcrypt)
+elseif(APPLE)
+    # Static FFmpeg archives contain VideoToolbox and AudioToolbox backends.
+    # Component tests do not inherit the application's framework linkage.
+    foreach(_framework IN ITEMS CoreFoundation CoreMedia CoreVideo VideoToolbox AudioToolbox)
+        find_library(SUNSHINE_TEST_${_framework}_LIBRARY ${_framework} REQUIRED)
+        list(APPEND SUNSHINE_TEST_FFMPEG_PLATFORM_LIBRARIES "${SUNSHINE_TEST_${_framework}_LIBRARY}")
+    endforeach()
 endif()
 
 # Test categories make the dependency scope of a target visible at configuration
@@ -1141,8 +1148,12 @@ if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/input/test_windows_absolute_mouse.py")
     add_test(NAME regression_windows_mouse_keys
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/input/test_windows_mouse_keys.py" --compiler "${SUNSHINE_TEST_GXX}")
-    add_test(NAME regression_frame_limiter_vsync
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_frame_limiter_vsync.py")
+    # These fixtures globally define _WIN32 while compiling against the host
+    # standard library. Darwin libc++ selects incompatible Windows CRT APIs.
+    if(NOT APPLE)
+        add_test(NAME regression_frame_limiter_vsync
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_frame_limiter_vsync.py")
+    endif()
     add_test(NAME regression_playnite_stop_callback
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_playnite_stop_callback.py")
     add_test(NAME regression_playnite_close_grace
@@ -1157,8 +1168,10 @@ if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
         PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME regression_rtss_profile_version
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_rtss_profile_version.py")
-    add_test(NAME regression_virtual_capture_readiness
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_virtual_capture_readiness.py")
+    if(NOT APPLE)
+        add_test(NAME regression_virtual_capture_readiness
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_virtual_capture_readiness.py")
+    endif()
     add_test(NAME regression_virtual_display_scale_boundary
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_virtual_display_scale_boundary.py")
     add_test(NAME regression_cancel_after_app_exit

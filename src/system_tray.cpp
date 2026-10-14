@@ -38,6 +38,7 @@
   #include <cstring>
   #include <cwchar>
   #include <functional>
+  #include <memory>
   #include <mutex>
   #include <queue>
   #include <string>
@@ -197,6 +198,14 @@ namespace system_tray {
       tray_actions.emplace(std::forward<Fn>(fn));
     }
     tray_action_cv.notify_one();
+#elif defined(__APPLE__)
+    auto *action = new std::function<void()>(std::forward<Fn>(fn));
+    dispatch_async_f(dispatch_get_main_queue(), action, [](void *context) {
+      std::unique_ptr<std::function<void()>> pending(static_cast<std::function<void()> *>(context));
+      if (tray_initialized.load()) {
+        (*pending)();
+      }
+    });
 #else
     fn();
 #endif
@@ -361,14 +370,8 @@ namespace system_tray {
     // create the system tray
     tray_set_log_callback(&tray_log_bridge);
   #if defined(__APPLE__) || defined(__MACH__)
-    // macOS requires that UI elements be created on the main thread
-    // creating tray using dispatch queue does not work, although the code doesn't actually throw any (visible) errors
-
-    // dispatch_async(dispatch_get_main_queue(), ^{
-    //   system_tray();
-    // });
-
-    BOOST_LOG(info) << "system_tray() is not yet implemented for this platform."sv;
+    // main() owns the AppKit event loop; only initialize the menu here.
+    init_tray();
   #else  // Windows, Linux
     if (tray_thread.joinable()) {
       return;

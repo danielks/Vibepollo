@@ -3,16 +3,22 @@
 # Changes made to this script should also be made in ci-macos.yml.
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source_dir="$(cd "$script_dir/.." && pwd)"
+build_dir="${VIBEPOLLO_BUILD_DIR:-$source_dir/build/macos}"
+cd "$source_dir"
+
 # Default value for arguments
 num_processors=$(sysctl -n hw.ncpu)
-publisher_name="LizardByte"
-publisher_website="https://app.lizardbyte.dev"
-publisher_issue_url="https://app.lizardbyte.dev/support"
+publisher_name="Nonary"
+publisher_website="https://github.com/Nonary/Vibepollo"
+publisher_issue_url="https://github.com/Nonary/Vibepollo/issues"
 step="all"
 build_docs="OFF"
 build_type="Release"
-sign_app="true"
-notarize="true"
+sign_app="${APPLE_CODESIGN_IDENTITY:-}"
+notarize=""
+deployment_target="${MACOSX_DEPLOYMENT_TARGET:-$(sw_vers -productVersion)}"
 
 # environment variables
 # BUILD_VERSION should be empty or cmake will assume a CI build
@@ -27,14 +33,16 @@ export COMMIT
 # boost could be included here but cmake will build the right version we need
 required_formulas=(
   "cmake"
-  "doxygen"
-  "graphviz"
+  "ninja"
+  "node"
   "pkgconf"
   "icu4c@78"
   "miniupnpc"
   "openssl@3"
   "opus"
-  "llvm"
+  "libpng"
+  "jpeg-turbo"
+  "webp"
 )
 
 function _usage() {
@@ -60,16 +68,22 @@ Options:
   --publisher-website      The URL of the publisher's website.
   --publisher-issue-url    The URL of the publisher's support site or issue tracker.
                            If you provide a modified version of Sunshine, we kindly request that you use your own url.
-  --step=STEP              Which step(s) to run: deps, cmake, build, dmg, or all (default: all)
+  --step=STEP              Which step(s) to run: deps, cmake, build, test, dmg, or all (default: all)
   --debug                  Build in debug mode.
   --build-docs             Build docs.
   --skip-codesign          Don't sign/notarize the bundle.
   --skip-notarize          Don't notarize the dmg.
+  --notarize               Notarize using the notarytool-password keychain profile.
+
+VIBEPOLLO_BUILD_DIR overrides the build directory (default: build/macos).
+MACOSX_DEPLOYMENT_TARGET overrides the minimum OS (default: this Mac's OS).
+Local builds do not require an Apple Developer certificate.
 
 Steps:
   deps                     Install dependencies only
   cmake                    Run cmake configure only
   build                    Build the project only
+  test                     Run the test suite
   dmg                      Create a DMG package
   all                      Run all steps (default)
 EOF
@@ -79,8 +93,19 @@ EOF
 
 function run_step_deps() {
   echo "Running step: Install dependencies"
-  brew update
-  brew install "${required_formulas[@]}"
+  HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install "${required_formulas[@]}"
+  if [[ "$build_docs" == "ON" ]]; then
+    HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install doxygen graphviz
+  fi
+  # The build-deps checkout identifies a prebuilt FFmpeg release. Its nested
+  # FFmpeg source repositories are not needed to build the host.
+  git submodule update --init third-party/build-deps
+  git submodule update --init --recursive \
+    third-party/Simple-Web-Server third-party/TPCircularBuffer \
+    third-party/googletest third-party/libdisplaydevice \
+    third-party/libvirtualdisplay third-party/libvirtualgamepad \
+    third-party/moonlight-common-c third-party/nanors \
+    third-party/nv-codec-headers third-party/tray
   return 0
 }
 
@@ -89,21 +114,26 @@ function run_step_cmake() {
 
   # prepare CMAKE args
   cmake_args=(
-    "-B=build"
-    "-S=."
+    "-B=${build_dir}"
+    "-S=${source_dir}"
+    "-G=Ninja"
     "-DBUILD_DOCS=${build_docs}"
     "-DBUILD_TESTS=ON"
-    "-DBUILD_WERROR=ON"
+    "-DBUILD_WERROR=OFF"
     "-DCMAKE_BUILD_TYPE=${build_type}"
+    "-DCMAKE_OSX_DEPLOYMENT_TARGET=${deployment_target}"
     "-DICU_ROOT=$(brew --prefix icu4c@78 2>/dev/null)"
     "-DOPENSSL_ROOT_DIR=$(brew --prefix openssl@3 2>/dev/null)"
     "-DOpus_ROOT_DIR=$(brew --prefix opus 2>/dev/null)"
     "-DSUNSHINE_ENABLE_TRAY=ON"
+    "-DSUNSHINE_ENABLE_WEBRTC=OFF"
+    "-DSUNSHINE_ENABLE_PYROWAVE=OFF"
+    "-DSUNSHINE_USE_SYSTEM_BOOST=OFF"
   )
 
   if [[ -n "${sign_app}" ]]; then
     if [[ -n "${APPLE_CODESIGN_IDENTITY:-}" ]]; then
-      cmake_args+=("-DAPPLE_CODESIGN_IDENTITY='${APPLE_CODESIGN_IDENTITY}'")
+      cmake_args+=("-DAPPLE_CODESIGN_IDENTITY=${APPLE_CODESIGN_IDENTITY}")
     else
       echo "Please set the APPLE_CODESIGN_IDENTITY environment variable or use --skip-codesign"
       exit 1
@@ -112,17 +142,17 @@ function run_step_cmake() {
 
   # Publisher metadata
   if [[ -n "$publisher_name" ]]; then
-    cmake_args+=("-DSUNSHINE_PUBLISHER_NAME='${publisher_name}'")
+    cmake_args+=("-DSUNSHINE_PUBLISHER_NAME=${publisher_name}")
   fi
   if [[ -n "$publisher_website" ]]; then
-    cmake_args+=("-DSUNSHINE_PUBLISHER_WEBSITE='${publisher_website}'")
+    cmake_args+=("-DSUNSHINE_PUBLISHER_WEBSITE=${publisher_website}")
   fi
   if [[ -n "$publisher_issue_url" ]]; then
-    cmake_args+=("-DSUNSHINE_PUBLISHER_ISSUE_URL='${publisher_issue_url}'")
+    cmake_args+=("-DSUNSHINE_PUBLISHER_ISSUE_URL=${publisher_issue_url}")
   fi
 
   # Cmake stuff here
-  mkdir -p "build"
+  mkdir -p "$build_dir"
   echo "cmake args:"
   echo "${cmake_args[@]}"
   cmake "${cmake_args[@]}"
@@ -148,11 +178,11 @@ function run_step_dmg() {
   cpack -G DragNDrop --config "${build_dir}/CPackConfig.cmake" --verbose
 
   if [[ -n "${sign_app}" && -n "${notarize}" ]]; then
-    time xcrun notarytool submit "${build_dir}/cpack_artifacts/Sunshine.dmg" \
+    time xcrun notarytool submit "${build_dir}/cpack_artifacts/Vibepollo.dmg" \
       --keychain-profile "notarytool-password" \
       --wait \
       --timeout 15m
-    xcrun stapler staple -v "${build_dir}/cpack_artifacts/Sunshine.dmg"
+    xcrun stapler staple -v "${build_dir}/cpack_artifacts/Vibepollo.dmg"
   fi
   return 0
 }
@@ -168,17 +198,22 @@ function run_install() {
     build)
       run_step_build
       ;;
+    test)
+      ctest --test-dir "$build_dir" --output-on-failure -j "$num_processors"
+      ;;
     dmg)
       run_step_dmg
       ;;
     all)
+      run_step_deps
       run_step_cmake
       run_step_build
+      ctest --test-dir "$build_dir" --output-on-failure -j "$num_processors"
       run_step_dmg
       ;;
     *)
       echo "Invalid step: $step"
-      echo "Valid steps are: deps, cmake, build, dmg, all"
+      echo "Valid steps are: deps, cmake, build, test, dmg, all"
       exit 1
       ;;
   esac
@@ -219,6 +254,9 @@ while getopts ":h-:" opt; do
         skip-notarize)
          notarize=""
           ;;
+        notarize)
+          notarize="true"
+          ;;
         *)
           echo "Invalid option: --${OPTARG}" 1>&2
           _usage 1
@@ -233,9 +271,12 @@ while getopts ":h-:" opt; do
 done
 shift $((OPTIND -1))
 
+if [[ -n "$notarize" && -z "$sign_app" ]]; then
+  echo "--notarize requires APPLE_CODESIGN_IDENTITY" >&2
+  exit 1
+fi
+
 # get directory of this script
-script_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
-build_dir="$script_dir/../build"
 echo "Script Directory: $script_dir"
 echo "Build Directory: $build_dir"
 mkdir -p "$build_dir"

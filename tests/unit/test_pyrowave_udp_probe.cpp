@@ -68,8 +68,17 @@ static void handshakeProbe(const char* address) {
   receiver.send_to(buffer(wrong), target);
   receiver.send_to(buffer(token.data(), token.size() - 1), target);
   if (local.is_v4()) {
-    ip::udp::socket stranger(io, {ip::make_address("127.0.0.2"), 0});
-    stranger.send_to(buffer(token), target);
+    // Darwin does not bind arbitrary 127/8 addresses without an interface
+    // alias. Keep the real handshake checks on hosts with only 127.0.0.1.
+    ip::udp::socket stranger(io, ip::udp::v4());
+    boost::system::error_code bind_error;
+    stranger.bind({ip::make_address("127.0.0.2"), 0}, bind_error);
+    if (!bind_error) {
+      stranger.send_to(buffer(token), target);
+    } else {
+      ASSERT_EQ(bind_error.default_error_condition(),
+                boost::system::errc::make_error_condition(boost::system::errc::address_not_available));
+    }
   }
   const auto warmup_until = steady_clock::now() + milliseconds(250);
   unsigned warmups = 0;

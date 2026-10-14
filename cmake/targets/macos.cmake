@@ -19,8 +19,7 @@ else()
             COMMENT "Copying bundle resources to build tree"
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${_bundle_resources_dir}"
             COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_BINARY_DIR}/assets" "${_bundle_resources_dir}/assets"
+            COMMAND "${CMAKE_COMMAND}" -E copy_directory "${SUNSHINE_SOURCE_ASSETS_DIR}/macos/assets" "${_bundle_resources_dir}/assets"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${SUNSHINE_SOURCE_ASSETS_DIR}/macos/build/sunshine.icns" "${_bundle_resources_dir}/sunshine.icns"
             VERBATIM)
 endif()
-
-# Tell linker to dynamically load these symbols at runtime, in case they're unavailable:
-target_link_options(sunshine PRIVATE -Wl,-U,_CGPreflightScreenCaptureAccess -Wl,-U,_CGRequestScreenCaptureAccess)

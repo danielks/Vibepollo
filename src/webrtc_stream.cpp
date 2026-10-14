@@ -3289,7 +3289,7 @@ namespace webrtc_stream {
           pending_output_override_lease =
             config::set_runtime_output_name_override_with_lease(*launch_session->output_name_override);
         }
-#else
+#elif defined(__linux__)
         pending_output_override_lease =
           config::set_runtime_output_name_override_with_lease(*launch_session->output_name_override);
 #endif

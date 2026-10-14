@@ -44,6 +44,9 @@
   #include <vector>
   #include <Windows.h>
 #endif
+#ifdef __APPLE__
+  #include "platform/macos/misc.h"
+#endif
 // local includes
 #include "config.h"
 #include "update.h"
@@ -6386,6 +6389,9 @@ namespace confighttp {
         platf::set_thread_name("confighttp::tcp");
         server->start([](unsigned short) {
           BOOST_LOG(info) << "Configuration UI available at ["sv << get_web_ui_url() << "]";
+#ifdef __APPLE__
+          platf::configuration_ui_ready();
+#endif
         });
       } catch (boost::system::system_error &err) {
         // It's possible the exception gets thrown after calling server->stop() from a different thread

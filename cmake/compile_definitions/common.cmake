@@ -303,6 +303,12 @@ include_directories(
         ${Boost_INCLUDE_DIRS}  # has to be the last, or we get runtime error on macOS ffmpeg encoder
 )
 
+if(APPLE)
+    # Keep the prepared FFmpeg's public and private CBS headers at the same
+    # version even when Homebrew also exposes an FFmpeg installation.
+    include_directories(BEFORE SYSTEM ${FFMPEG_INCLUDE_DIRS})
+endif()
+
 list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
         ${MINIUPNP_LIBRARIES}
         ${CMAKE_THREAD_LIBS_INIT}

@@ -3,6 +3,18 @@ name: CI-macOS
 permissions: {}
 
 on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/ci-macos.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'scripts/macos_build.sh'
+      - 'src/**'
+      - 'src_assets/macos/**'
+      - 'tests/**'
+      - 'tools/pyrowave_macos_probe/**'
+      - 'third-party/pyrowave/**'
   workflow_call:
     inputs:
       publish_release:
@@ -70,21 +82,11 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          submodules: recursive
 
       - name: Install dependencies
-        timeout-minutes: 5
+        timeout-minutes: 15
         run: |
-          brew install --force \
-            cmake \
-            doxygen \
-            graphviz \
-            pkgconf \
-            icu4c@78 \
-            miniupnpc \
-            openssl@3 \
-            opus
+          bash scripts/macos_build.sh --step=deps
 
       - name: Configure
         env:
@@ -94,8 +96,15 @@ jobs:
           cmake \
             -B build \
             -S . \
-            -DBUILD_WERROR=ON \
+            -G Ninja \
+            -DBUILD_WERROR=OFF \
+            -DBUILD_DOCS=OFF \
+            -DBUILD_TESTS=ON \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET}" \
+            -DSUNSHINE_USE_SYSTEM_BOOST=OFF \
+            -DSUNSHINE_ENABLE_WEBRTC=OFF \
+            -DSUNSHINE_ENABLE_PYROWAVE=OFF \
             -DICU_ROOT="$(brew --prefix icu4c@78 2>/dev/null)" \
             -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3 2>/dev/null)" \
             -DOpus_ROOT_DIR="$(brew --prefix opus 2>/dev/null)" \
@@ -109,6 +118,14 @@ jobs:
           echo "::add-matcher::.github/matchers/gcc.json"
           cmake --build build -j "$(sysctl -n hw.ncpu)"
           echo "::remove-matcher owner=gcc::"
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -j "$(sysctl -n hw.ncpu)"
+
+      - name: Compile PyroWave GPU diagnostic
+        run: |
+          cmake -S tools/pyrowave_macos_probe -B build/pyrowave-probe -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/pyrowave-probe -j "$(sysctl -n hw.ncpu)"
 
       - name: Package DMG
         env:

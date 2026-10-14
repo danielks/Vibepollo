@@ -1,4 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
+if(CMAKE_HOST_APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
+    # Core Audio process taps are used by the macOS audio backend.
+    if(DEFINED ENV{MACOSX_DEPLOYMENT_TARGET})
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "$ENV{MACOSX_DEPLOYMENT_TARGET}" CACHE STRING "Minimum macOS version")
+    else()
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "14.2" CACHE STRING "Minimum macOS version")
+    endif()
+endif()
 # `CMAKE_CUDA_ARCHITECTURES` requires 3.18
 # `set_source_files_properties` requires 3.18
 # `cmake_path(CONVERT ... TO_NATIVE_PATH_LIST ...)` requires 3.20
@@ -7,6 +15,10 @@ cmake_minimum_required(VERSION 3.20)
 project(Vibepollo VERSION 0.0.0
         DESCRIPTION "Self-hosted game stream host for Moonlight"
         HOMEPAGE_URL "https://github.com/Nonary/Vibepollo")
+
+if(APPLE AND CMAKE_OSX_DEPLOYMENT_TARGET VERSION_LESS "14.2")
+    message(FATAL_ERROR "The macOS audio backend requires macOS 14.2 or newer")
+endif()
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

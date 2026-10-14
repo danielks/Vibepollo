@@ -5,6 +5,9 @@ if (WIN32)
         endif()
     endif()
 elseif (APPLE)
+    # Prefer package-manager libraries over unrelated frameworks (e.g. Mono's
+    # bundled PNG/JPEG). Apple system frameworks remain available as fallback.
+    set(CMAKE_FIND_FRAMEWORK LAST)
     if (NOT SUNSHINE_BUILD_HOMEBREW)
         set(CMAKE_BUILD_WITH_INSTALL_RPATH ON)
         set(CMAKE_INSTALL_RPATH "")

@@ -43,6 +43,9 @@
   #include "lutris_auto_sync.h"
 #endif
 #include "webrtc_stream.h"
+#ifdef __APPLE__
+  #include "src/platform/macos/misc.h"
+#endif
 #ifdef _WIN32
   #include <shobjidl.h>
 
@@ -319,6 +322,12 @@ int main(int argc, char *argv[]) {
     std::printf("%s version: %s commit: %s\n", PROJECT_NAME, PROJECT_VERSION, PROJECT_VERSION_COMMIT);
     return 0;
   }
+
+#ifdef __APPLE__
+  if (!platf::prepare_app()) {
+    return 1;
+  }
+#endif
 
 #ifdef SUNSHINE_BUILD_STEAMOS
   // Resolve assets from the executable's release, including launches outside
@@ -1026,7 +1035,15 @@ int main(int argc, char *argv[]) {
 #endif
 
   // Wait for shutdown
+#ifdef __APPLE__
+  // AppKit (status menu, permission dialogs and dispatch to the main queue)
+  // must keep running on the process's main thread while the host is active.
+  while (!shutdown_event->peek()) {
+    platf::poll_app_events();
+  }
+#else
   shutdown_event->view();
+#endif
 #ifdef __linux__
   if (supervised_machine_host) {
     platf::linux_private_display::request_process_shutdown_preserve();

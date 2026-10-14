@@ -138,6 +138,18 @@ void sleep_until_nsecs(int64_t timepoint)
 		_mm_pause();
 #endif
 	}
+#elif defined(__APPLE__)
+	// Darwin has clock_gettime and nanosleep, but not clock_nanosleep.
+	// Recompute against the original monotonic deadline after interruptions.
+	for (;;)
+	{
+		int64_t remaining = timepoint - get_current_time_nsecs();
+		if (remaining <= 0)
+			break;
+		struct timespec ts = { remaining / 1000000000ll, remaining % 1000000000ll };
+		if (nanosleep(&ts, nullptr) != 0 && errno != EINTR)
+			break;
+	}
 #else
 	constexpr auto timebase = CLOCK_MONOTONIC;
 	struct timespec ts = {};

@@ -16,6 +16,7 @@
 #include <arpa/inet.h>
 #include <dlfcn.h>
 #include <Foundation/Foundation.h>
+#import <AppKit/AppKit.h>
 #include <mach-o/dyld.h>
 #include <net/if_dl.h>
 #include <pwd.h>
@@ -40,53 +41,99 @@ namespace fs = std::filesystem;
 namespace bp = boost_process_shim;
 namespace v2 = boost::process::v2;
 
+// Finder sends a reopen Apple event even for an LSUIElement app that
+// already has a running instance. Keep this handler independent of the tray
+// library's application delegate, which owns the status-menu callbacks.
+@interface VibepolloOpenHandler: NSObject
+@property(nonatomic, assign) BOOL configurationReady;
+@property(nonatomic, assign) BOOL openRequested;
+- (void)handleOpen:(NSAppleEventDescriptor *)event withReply:(NSAppleEventDescriptor *)reply;
+- (void)configurationDidBecomeReady;
+@end
+
+@implementation VibepolloOpenHandler
+- (void)handleOpen:(NSAppleEventDescriptor *)event withReply:(NSAppleEventDescriptor *)reply {
+  if (self.configurationReady) {
+    BOOST_LOG(info) << "Opening configuration UI from Finder";
+    launch_ui();
+  } else {
+    self.openRequested = YES;
+  }
+}
+
+- (void)configurationDidBecomeReady {
+  self.configurationReady = YES;
+  if (self.openRequested) {
+    self.openRequested = NO;
+    BOOST_LOG(info) << "Opening configuration UI after startup";
+    launch_ui();
+  }
+}
+@end
+
+static VibepolloOpenHandler *app_open_handler;
+
 namespace platf {
 
-// Even though the following two functions are available starting in macOS 10.15, they weren't
-// actually in the Mac SDK until Xcode 12.2, the first to include the SDK for macOS 11
-#if __MAC_OS_X_VERSION_MAX_ALLOWED < 110000  // __MAC_11_0
-  // If they're not in the SDK then we can use our own function definitions.
-  // Need to use weak import so that this will link in macOS 10.14 and earlier
-  extern "C" bool CGPreflightScreenCaptureAccess(void) __attribute__((weak_import));
-  extern "C" bool CGRequestScreenCaptureAccess(void) __attribute__((weak_import));
-#endif
+  bool prepare_app() {
+    @autoreleasepool {
+      NSBundle *bundle = [NSBundle mainBundle];
+      if ([bundle.bundlePath.pathExtension isEqualToString:@"app"]) {
+        std::error_code error;
+        fs::current_path(fs::path(bundle.executablePath.fileSystemRepresentation).parent_path(), error);
+        if (error) {
+          std::fprintf(stderr, "Vibepollo: cannot resolve app resources: %s\n", error.message().c_str());
+          return false;
+        }
+      }
+      [NSApplication sharedApplication];
+      [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+      app_open_handler = [[VibepolloOpenHandler alloc] init];
+      app_open_handler.openRequested = [bundle.bundlePath.pathExtension isEqualToString:@"app"];
+      [NSApp finishLaunching];
+    }
+    return true;
+  }
 
-  namespace {
-    auto screen_capture_allowed = std::atomic<bool> {false};
-  }  // namespace
+  void configuration_ui_ready() {
+    // The HTTPS listener calls this from its worker thread. Wait until it is
+    // listening before honoring Finder requests, then open on AppKit's thread.
+    dispatch_async(dispatch_get_main_queue(), ^{
+      // AppKit sets up its own Apple-event handlers during launch. Register
+      // after that setup (and the tray delegate) so reopening reaches us.
+      [[NSAppleEventManager sharedAppleEventManager]
+        setEventHandler:app_open_handler andSelector:@selector(handleOpen:withReply:)
+        forEventClass:kCoreEventClass andEventID:kAEReopenApplication];
+      [app_open_handler configurationDidBecomeReady];
+    });
+  }
+
+  void poll_app_events() {
+    @autoreleasepool {
+      NSEvent *event = [NSApp nextEventMatchingMask:NSEventMaskAny
+                                        untilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]
+                                           inMode:NSDefaultRunLoopMode
+                                          dequeue:YES];
+      if (event) {
+        [NSApp sendEvent:event];
+      }
+      [NSApp updateWindows];
+    }
+  }
 
   // Return whether screen capture is allowed for this process.
   bool is_screen_capture_allowed() {
-    return screen_capture_allowed;
+    // Permission may be granted or revoked while the web UI remains open.
+    return CGPreflightScreenCaptureAccess();
   }
 
   std::unique_ptr<deinit_t> init() {
-    // This will generate a warning about CGPreflightScreenCaptureAccess and
-    // CGRequestScreenCaptureAccess being unavailable before macOS 10.15, but
-    // we have a guard to prevent it from being called on those earlier systems.
-    // Unfortunately the supported way to silence this warning, using @available,
-    // produces linker errors for __isPlatformVersionAtLeast, so we have to use
-    // a different method.
-    // We also ignore "tautological-pointer-compare" because when compiling with
-    // Xcode 12.2 and later, these functions are not weakly linked and will never
-    // be null, and therefore generate this warning. Since we are weakly linking
-    // when compiling with earlier Xcode versions, the check for null is
-    // necessary, and so we ignore the warning.
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunguarded-availability-new"
-#pragma clang diagnostic ignored "-Wtautological-pointer-compare"
-    if ([[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:((NSOperatingSystemVersion) {10, 15, 0})] &&
-        // Double check that these weakly-linked symbols have been loaded:
-        CGPreflightScreenCaptureAccess != nullptr && CGRequestScreenCaptureAccess != nullptr &&
-        !CGPreflightScreenCaptureAccess()) {
+    if (!is_screen_capture_allowed()) {
       BOOST_LOG(error) << "No screen capture permission!"sv;
-      BOOST_LOG(error) << "Please activate it in 'System Preferences' -> 'Privacy' -> 'Screen Recording'"sv;
+      BOOST_LOG(error) << "Enable Vibepollo in System Settings -> Privacy & Security -> Screen & System Audio Recording"sv;
       CGRequestScreenCaptureAccess();
       return nullptr;
     }
-#pragma clang diagnostic pop
-    // Record that we determined that we have the screen capture permission.
-    screen_capture_allowed = true;
     return std::make_unique<deinit_t>();
   }
 
@@ -228,7 +275,7 @@ namespace platf {
     try {
       if (group) {
         if (!working_dir.empty()) {
-          auto start = v2::start_dir(v2::filesystem::path(working_dir.string()));
+          auto start = v2::process_start_dir(v2::filesystem::path(working_dir.string()));
           auto proc = v2::process(exec, exe_path, args, start, stdio, env_init, bp::detail::posix_group_initer {group});
           return bp::child(std::move(proc));
         }
@@ -237,7 +284,7 @@ namespace platf {
       }
 
       if (!working_dir.empty()) {
-        auto start = v2::start_dir(v2::filesystem::path(working_dir.string()));
+        auto start = v2::process_start_dir(v2::filesystem::path(working_dir.string()));
         auto proc = v2::process(exec, exe_path, args, start, stdio, env_init);
         return bp::child(std::move(proc));
       }
@@ -257,18 +304,17 @@ namespace platf {
    * @param url The url to open.
    */
   void open_url(const std::string &url) {
-    boost::filesystem::path working_dir;
-    std::string cmd = R"(open ")" + url + R"(")";
-
-    bp::environment _env = bp::this_process::env();
-    std::error_code ec;
-    auto child = run_command(false, false, cmd, working_dir, _env, nullptr, ec, nullptr);
-    if (ec) {
-      BOOST_LOG(warning) << "Couldn't open url ["sv << url << "]: System: "sv << ec.message();
-    } else {
-      BOOST_LOG(info) << "Opened url ["sv << url << "]"sv;
-      child.detach();
-    }
+    const auto url_copy = url;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      @autoreleasepool {
+        NSURL *target = [NSURL URLWithString:[NSString stringWithUTF8String:url_copy.c_str()]];
+        if (target && [[NSWorkspace sharedWorkspace] openURL:target]) {
+          BOOST_LOG(info) << "Opened url [" << url_copy << "]";
+        } else {
+          BOOST_LOG(warning) << "Couldn't open url [" << url_copy << "]";
+        }
+      }
+    });
   }
 
   void adjust_thread_priority(thread_priority_e priority) {

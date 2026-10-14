@@ -37,7 +37,8 @@ namespace {
     }
     const auto timestamp = std::filesystem::last_write_time(path, ec);
     if (!ec) {
-      mix_number(value, timestamp.time_since_epoch().count());
+      // libc++ file clocks have a 128-bit rep; the fingerprint is 64-bit.
+      mix_number(value, static_cast<std::intmax_t>(timestamp.time_since_epoch().count()));
     } else {
       mix(value, "unstatable");
     }

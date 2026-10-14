@@ -44,7 +44,8 @@ else()
         message(STATUS \"Running fixup_bundle for: \${_app}\")
         include(BundleUtilities)
         set(BU_CHMOD_BUNDLE_ITEMS TRUE)
-        fixup_bundle(\"\${_app}\" \"\" \"\")
+        # Resolve transitive @rpath dependencies such as libwebp's libsharpyuv.
+        fixup_bundle(\"\${_app}\" \"\" \"${MACOS_LINK_DIRECTORIES}\")
 
         # Remove Finder/resource-fork metadata that breaks codesign.
         execute_process(COMMAND /usr/bin/xattr -rc \"\${_app}\")
@@ -60,7 +61,7 @@ else()
         endif()
 
         # SHOULD_SIGN is set only when publish_release is true or when manually building
-        if(\$ENV{SHOULD_SIGN} STREQUAL \"true\")
+        if(\"\$ENV{SHOULD_SIGN}\" STREQUAL \"true\")
           # Sign anything inside Contents/Frameworks
           set(_fw_dir \"\${_app}/Contents/Frameworks\")
           if(EXISTS \"\${_fw_dir}\")
@@ -97,6 +98,19 @@ else()
           )
           if(NOT rc4 EQUAL 0)
               message(FATAL_ERROR \"codesign --verify failed\")
+          endif()
+        else()
+          # install_name_tool invalidates the linker signatures. Apple Silicon
+          # still needs valid ad-hoc signatures for local unsigned builds.
+          execute_process(COMMAND /usr/bin/codesign --force --deep --sign - \"\${_app}\"
+              RESULT_VARIABLE rc5)
+          if(NOT rc5 EQUAL 0)
+              message(FATAL_ERROR \"Ad-hoc signing failed\")
+          endif()
+          execute_process(COMMAND /usr/bin/codesign --verify --deep --strict \"\${_app}\"
+              RESULT_VARIABLE rc6)
+          if(NOT rc6 EQUAL 0)
+              message(FATAL_ERROR \"Ad-hoc signature verification failed\")
           endif()
         endif()
     " COMPONENT Runtime)
